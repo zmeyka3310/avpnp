@@ -1,0 +1,15 @@
+# Local reverse-engineering scratch and tooling (not part of the project)
+.probe/
+
+# Local Android SDK
+.androidsdk/
+
+# Android / Gradle
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/

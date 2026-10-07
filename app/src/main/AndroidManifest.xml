@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      avpnp must resolve the uid of any app the graph routes, and those apps are user-chosen, so it
+      cannot enumerate them ahead of time in <queries>.
+    -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:allowBackup="false"
+        android:extractNativeLibs="true"
+        android:label="avpnp"
+        android:supportsRtl="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- avpnp's own VPN. It owns the single slot for the profile. -->
+        <service
+            android:name=".AvpnpVpnService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Holds the system VPN slot that hijacked VPN clients are fed from." />
+        </service>
+
+        <!--
+          The privileged surface avpnp exposes. Exported so a hijacked client's process can bind;
+          avpnp is installed with the force-queryable override so clients are allowed to see it, and
+          callers are uid-checked against the configured client profiles.
+        -->
+        <service
+            android:name=".AvpnpBrokerService"
+            android:exported="true" />
+
+        <!-- LSPosed module declaration (legacy Xposed API entry point). -->
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="avpnp — Android VPN patchbay" />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="93" />
+    </application>
+
+</manifest>
