@@ -14,16 +14,16 @@ import java.util.concurrent.TimeUnit
 /**
  * Creates a client's TUN by running avpnp's root helper and receiving the resulting fd.
  *
- * The helper runs as root (via `su`), opens /dev/net/tun, configures the interface, and sends the fd
- * back over an abstract Unix socket using SCM_RIGHTS. It makes no policy decisions: every parameter
- * comes from the client's [ClientConfig].
+ * The helper runs as root (via `su`), opens /dev/net/tun, configures the interface, and sends the
+ * fd back over an abstract Unix socket using SCM_RIGHTS. It makes no policy decisions: every
+ * parameter comes from [AvpnpConfig].
  */
 object TunFactory {
 
     private const val TAG = "avpnp"
     private const val ACCEPT_TIMEOUT_SECONDS = 20L
 
-    fun create(context: Context, config: ClientConfig): ParcelFileDescriptor {
+    fun create(context: Context, profile: AvpnpConfig.ClientProfile): ParcelFileDescriptor {
         val socketName = "avpnp_tun_${Process.myPid()}_${System.nanoTime()}"
         val server = LocalServerSocket(socketName)
 
@@ -31,20 +31,13 @@ object TunFactory {
             val helper = File(context.applicationInfo.nativeLibraryDir, "libavpnp_tun.so")
             check(helper.exists()) { "helper missing at ${helper.absolutePath}" }
 
-            // A reconnect can leave the previous interface alive while the old client still holds
-            // its fd, so sweep this client's own interfaces first. Prefixes are unambiguous now that
-            // each client's name has a separator before the kernel's instance number.
-            val prefix = ClientRegistry.tunPrefix(config)
-            val sweep =
-                "for d in \$(ls /sys/class/net | grep '^$prefix'); do ip link del \"\$d\" 2>/dev/null; done"
-
-            val command = "$sweep; " + listOf(
+            val command = listOf(
                 helper.absolutePath,
                 "--connect", socketName,
-                "--if", config.tunName,
-                "--mtu", config.mtu.toString(),
-                "--addr", config.address,
-                "--table", config.table.toString(),
+                "--if", profile.tunName,
+                "--mtu", profile.tunMtu.toString(),
+                "--addr", profile.tunAddress,
+                "--table", profile.table.toString(),
             ).joinToString(" ")
 
             Log.i(TAG, "starting helper: su -c $command")
@@ -77,7 +70,7 @@ object TunFactory {
 
             val pfd = ParcelFileDescriptor.dup(fds[0])
             client.close()
-            Log.i(TAG, "TUN ready for ${config.packageName}: ${config.tunName} fd=${pfd.fd}")
+            Log.i(TAG, "TUN ready for ${profile.label}: ${profile.tunName} fd=${pfd.fd}")
             return pfd
         } finally {
             runCatching { server.close() }
