@@ -36,6 +36,9 @@ what makes chaining and fan-in ordinary routing problems.
 - **avpnp creates the client's TUN.** A small root helper opens `/dev/net/tun`, configures the interface, and
   hands the fd back. avpnp brokers that fd to the client over binder, and the client bridges it to its own
   core as it would its own TUN.
+- **The injector is gated by a flag.** avpnp publishes `/data/local/tmp/avpnp.routing`. While that
+  file is absent the injected code substitutes nothing and the client runs its normal logic, so a
+  stray injection cannot break a client. The file is labelled `system_file` so apps may read it.
 - **avpnp routes by UID.** Each link compiles to one `ip rule` sending a source UID's packets to an exit's
   route table. The kernel moves every packet; avpnp performs no userspace packet processing.
 

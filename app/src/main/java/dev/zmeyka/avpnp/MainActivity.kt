@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -111,6 +112,27 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(status)
+
+            // Whether the injector should hijack a client, or let it behave as an ordinary VPN app.
+            addView(CheckBox(this@MainActivity).apply {
+                text = "Routing enabled (master)"
+                isChecked = RoutingPrefs.isMasterEnabled(this@MainActivity)
+                setOnCheckedChangeListener { _, checked ->
+                    RoutingPrefs.setMaster(this@MainActivity, checked)
+                    publishFlags()
+                }
+            })
+            AvpnpConfig.profiles.forEach { profile ->
+                addView(CheckBox(this@MainActivity).apply {
+                    text = "  route through ${profile.label}"
+                    isChecked = RoutingPrefs.isClientEnabled(this@MainActivity, profile.packageName)
+                    setOnCheckedChangeListener { _, checked ->
+                        RoutingPrefs.setClient(this@MainActivity, profile.packageName, checked)
+                        publishFlags()
+                    }
+                })
+            }
+
             addView(startVpn)
             addView(apply)
             addView(testTun)
@@ -134,5 +156,12 @@ class MainActivity : Activity() {
     private fun startVpnService() {
         startService(Intent(this, AvpnpVpnService::class.java))
         Toast.makeText(this, "avpnp VPN starting", Toast.LENGTH_SHORT).show()
+    }
+
+    /** Flag changes take effect the next time a client prepares/establishes. */
+    private fun publishFlags() {
+        Thread {
+            FlagPublisher.sync(this) { line -> android.util.Log.i("avpnp", line) }
+        }.start()
     }
 }

@@ -50,6 +50,16 @@ class AvpnpBrokerService : Service() {
             Log.i(TAG, "applyRouting requested")
             Routing.apply(this@AvpnpBrokerService) { Log.i(TAG, "routing: $it") }
         }
+
+        override fun isRoutingEnabled(clientPackage: String): Boolean {
+            return try {
+                requireKnownCaller(clientPackage)
+                RoutingPrefs.isEnabled(this@AvpnpBrokerService, clientPackage)
+            } catch (t: Throwable) {
+                Log.e(TAG, "isRoutingEnabled failed for $clientPackage", t)
+                false
+            }
+        }
     }
 
     /**

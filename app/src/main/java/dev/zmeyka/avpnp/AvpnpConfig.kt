@@ -28,6 +28,8 @@ object AvpnpConfig {
         val tunMtu: Int,
         /** avpnp-owned routing table carrying `default dev <tunName>`. */
         val table: Int,
+        /** Default for the runtime routing toggle; the app can change it per client. */
+        val routingEnabledByDefault: Boolean = true,
     )
 
     val profiles: List<ClientProfile> = listOf(

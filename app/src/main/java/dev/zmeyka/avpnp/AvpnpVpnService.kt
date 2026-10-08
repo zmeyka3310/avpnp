@@ -27,6 +27,8 @@ class AvpnpVpnService : VpnService() {
         if (tun == null) {
             establishNoOpVpn()
         }
+        // Clients check this flag on their next prepare()/establish().
+        Thread { runCatching { FlagPublisher.sync(this) { Log.i(TAG, "flag: $it") } } }.start()
         return START_STICKY
     }
 

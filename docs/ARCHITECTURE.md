@@ -55,6 +55,21 @@ One generic hook, driven by per-package profiles. Verified as sufficient for all
 Client settings (routes, app filters, DNS) are ignored as configuration, but the TUN is created with the
 address and MTU the client asked for, so it sees the interface it expects.
 
+### The two paths, and the fail-safe gate
+
+Before substituting anything, the injector checks a single global flag file, `/data/local/tmp/avpnp.routing`:
+
+- **absent** -> the client runs its normal logic; no hook result is substituted
+- **present** -> inject: hand the client an avpnp-owned TUN
+
+The file is written by avpnp as root with mode 0644 and `chcon u:object_r:system_file:s0`. The label
+matters: a file created by a root domain carries no app MLS category, so an ordinary app's read would
+otherwise be denied. `system_file` is a trusted object type that apps may read.
+
+This keeps the absent case a true fail-safe: a module injected into a client with no published flag cannot
+break that client. Per-client granularity is separate — avpnp's UI has a master and per-client toggle, and
+the broker answers `isRoutingEnabled` for the per-client decision.
+
 ## 4. Routing
 
 One link becomes one rule:
