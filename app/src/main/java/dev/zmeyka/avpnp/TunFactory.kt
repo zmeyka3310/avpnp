@@ -31,7 +31,14 @@ object TunFactory {
             val helper = File(context.applicationInfo.nativeLibraryDir, "libavpnp_tun.so")
             check(helper.exists()) { "helper missing at ${helper.absolutePath}" }
 
-            val command = listOf(
+            // A reconnect can leave the previous interface alive while the old client still holds
+            // its fd, so sweep this client's own interfaces first. Prefixes are unambiguous now that
+            // each client's name has a separator before the kernel's instance number.
+            val prefix = ClientRegistry.tunPrefix(config)
+            val sweep =
+                "for d in \$(ls /sys/class/net | grep '^$prefix'); do ip link del \"\$d\" 2>/dev/null; done"
+
+            val command = "$sweep; " + listOf(
                 helper.absolutePath,
                 "--connect", socketName,
                 "--if", config.tunName,

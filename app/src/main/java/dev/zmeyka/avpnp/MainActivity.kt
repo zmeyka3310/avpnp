@@ -79,6 +79,12 @@ class MainActivity : Activity() {
         buildAppList()
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Tunnel status changes while the operator is away, so refresh it on return.
+        if (::clientsContainer.isInitialized) buildClientList()
+    }
+
     private fun sectionHeader(text: String) = TextView(this).apply {
         setPadding(48, 24, 48, 8)
         textSize = 14f
@@ -115,9 +121,15 @@ class MainActivity : Activity() {
         }
 
         candidates.forEach { (packageName, label) ->
+            val config = ClientRegistry.get(this, packageName)
+            val status = when {
+                config == null -> "off"
+                ClientRegistry.isTunUp(config) -> "TUN up"
+                else -> "no TUN"
+            }
             clientsContainer.addView(CheckBox(this).apply {
-                text = "  $label"
-                isChecked = ClientRegistry.get(this@MainActivity, packageName) != null
+                text = "  $label  [$status]\n     $packageName"
+                isChecked = config != null
                 setOnCheckedChangeListener { _, checked ->
                     if (checked) ClientRegistry.enable(this@MainActivity, packageName)
                     else ClientRegistry.disable(this@MainActivity, packageName)

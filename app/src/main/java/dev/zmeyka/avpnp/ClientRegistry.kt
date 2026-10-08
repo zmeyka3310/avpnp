@@ -2,6 +2,7 @@ package dev.zmeyka.avpnp
 
 import android.content.Context
 import android.content.Intent
+import java.io.File
 
 /**
  * The set of VPN clients avpnp is willing to hijack, and their tunnel parameters.
@@ -42,8 +43,9 @@ object ClientRegistry {
 
         val config = ClientConfig(
             packageName = packageName,
-            // %d lets the kernel pick a unique instance, so reconnects cannot collide.
-            tunName = "avpnp_${index}%d",
+            // A separator before %d keeps each client's prefix unambiguous, so its stale interfaces
+            // can be swept by prefix without touching another client's.
+            tunName = "avpnp_${index}_%d",
             address = "10.77.$index.1/24",
             mtu = 1500,
             table = table,
@@ -54,6 +56,13 @@ object ClientRegistry {
     fun disable(context: Context, packageName: String) {
         prefs(context).edit().remove(PREFIX + packageName).apply()
     }
+
+    /** The part of a client's interface name before the kernel's instance number. */
+    fun tunPrefix(config: ClientConfig): String = config.tunName.substringBefore("%d")
+
+    /** Whether this client currently has an interface, i.e. its tunnel is actually up. */
+    fun isTunUp(config: ClientConfig): Boolean =
+        File("/sys/class/net").list()?.any { it.startsWith(tunPrefix(config)) } == true
 
     /** Apps that declare a VpnService: the candidates for hijacking. */
     fun candidates(context: Context): List<Pair<String, String>> =
