@@ -67,6 +67,7 @@ class MainActivity : Activity() {
                 addView(startVpnButton())
                 addView(applyButton())
                 addView(cleanupButton())
+                addView(reinjectButton())
             })
             addView(sectionHeader("Apps:"))
             addView(appList, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -273,6 +274,33 @@ class MainActivity : Activity() {
                 Routing.cleanup(this@MainActivity) { line -> android.util.Log.i("avpnp", line) }
                 runOnUiThread {
                     Toast.makeText(this@MainActivity, "Cleaned up (see logcat)", Toast.LENGTH_LONG).show()
+                }
+            }.start()
+        }
+    }
+
+    /**
+     * Kills every enabled client so the next launch is injected cleanly. A client only consults the
+     * injector at process start, so this is the way to pick up a registry change without rebooting
+     * anything.
+     */
+    private fun reinjectButton() = Button(this).apply {
+        text = "Reinject clients (force-stop)"
+        setOnClickListener {
+            val clients = ClientRegistry.enabled(this@MainActivity).map { it.packageName }
+            if (clients.isEmpty()) {
+                Toast.makeText(this@MainActivity, "No clients enabled", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            Toast.makeText(this@MainActivity, "Stopping ${clients.size} client(s)…", Toast.LENGTH_SHORT).show()
+            Thread {
+                Routing.forceStop(clients) { line -> android.util.Log.i("avpnp", line) }
+                runOnUiThread {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Clients stopped — reopen them to reinject",
+                        Toast.LENGTH_LONG,
+                    ).show()
                 }
             }.start()
         }

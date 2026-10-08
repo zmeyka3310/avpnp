@@ -176,8 +176,12 @@ class AvpnpModule : IXposedHookLoadPackage {
         val intent = Intent().setComponent(
             ComponentName("dev.zmeyka.avpnp", "dev.zmeyka.avpnp.AvpnpBrokerService")
         )
+        // Bind with the Application context, not whatever Context we happen to have. Binding with a
+        // VpnService context leaks the connection when that service is destroyed
+        // (ServiceConnectionLeaked), because nothing unbinds it.
+        val appContext = context.applicationContext ?: context
         val bound = try {
-            context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+            appContext.bindService(intent, connection, Context.BIND_AUTO_CREATE)
         } catch (t: Throwable) {
             log("prebind bindService threw: $t")
             false

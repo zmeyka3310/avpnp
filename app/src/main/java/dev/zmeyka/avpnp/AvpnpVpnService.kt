@@ -6,8 +6,14 @@ import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import java.net.InetAddress
@@ -23,6 +29,39 @@ import java.net.InetAddress
 class AvpnpVpnService : VpnService() {
 
     private var tun: ParcelFileDescriptor? = null
+
+    private val handler = Handler(Looper.getMainLooper())
+
+    /**
+     * netd rewrites the VPN table whenever the tunnel or its underlying network changes — which
+     * silently discards the `throw` route and can leave every app pointing at a dead interface. So
+     * watch the VPN network and recompile whenever it moves.
+     */
+    private val vpnCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = scheduleApply()
+        override fun onLost(network: Network) = scheduleApply()
+        override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) =
+            scheduleApply()
+    }
+
+    private val applyRunnable = Runnable {
+        Thread { runCatching { Routing.apply(this) { Log.i(TAG, "routing: $it") } } }.start()
+    }
+
+    /** Coalesces bursts of network callbacks into one recompile. */
+    private fun scheduleApply() {
+        handler.removeCallbacks(applyRunnable)
+        handler.postDelayed(applyRunnable, APPLY_DEBOUNCE_MS)
+    }
+
+    private fun watchVpnNetwork() {
+        val manager = getSystemService(ConnectivityManager::class.java) ?: return
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_VPN)
+            .build()
+        runCatching { manager.registerNetworkCallback(request, vpnCallback) }
+            .onFailure { Log.w(TAG, "cannot watch VPN network: $it") }
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Refuse to establish while any app is unassigned: "unassigned" must never silently mean
@@ -73,11 +112,9 @@ class AvpnpVpnService : VpnService() {
         Log.i(TAG, "avpnp VPN established: ${tun != null} (fd=${tun?.fd})")
 
         if (tun != null) {
+            watchVpnNetwork()
             // Give netd a moment to create the VPN table, then compile the current intent.
-            Thread {
-                Thread.sleep(1000)
-                runCatching { Routing.apply(this) { Log.i(TAG, "routing: $it") } }
-            }.start()
+            scheduleApply()
         }
     }
 
@@ -85,6 +122,11 @@ class AvpnpVpnService : VpnService() {
         Log.i(TAG, "avpnp VPN revoked by the system")
         tun?.let { runCatching { it.close() } }
         tun = null
+        handler.removeCallbacks(applyRunnable)
+        runCatching {
+            getSystemService(ConnectivityManager::class.java)
+                ?.unregisterNetworkCallback(vpnCallback)
+        }
         cleanupRouting()
         super.onRevoke()
     }
@@ -92,6 +134,11 @@ class AvpnpVpnService : VpnService() {
     override fun onDestroy() {
         tun?.let { runCatching { it.close() } }
         tun = null
+        handler.removeCallbacks(applyRunnable)
+        runCatching {
+            getSystemService(ConnectivityManager::class.java)
+                ?.unregisterNetworkCallback(vpnCallback)
+        }
         cleanupRouting()
         super.onDestroy()
     }
@@ -152,5 +199,8 @@ class AvpnpVpnService : VpnService() {
         const val CHANNEL_ID = "avpnp"
         const val NOTIFICATION_ID = 1
         const val TUN_ADDRESS = "10.99.0.1"
+
+        /** Long enough for netd to finish rewriting the table after it notifies us. */
+        const val APPLY_DEBOUNCE_MS = 750L
     }
 }

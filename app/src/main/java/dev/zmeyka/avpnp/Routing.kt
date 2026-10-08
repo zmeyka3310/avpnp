@@ -118,6 +118,17 @@ object Routing {
         log("rc=${runRoot(command)}")
     }
 
+    /**
+     * Force-stops the given packages. A client only picks up the injector at process start, so this
+     * is how you re-inject one: kill it, then open it again.
+     */
+    fun forceStop(packages: List<String>, log: (String) -> Unit = {}) {
+        if (packages.isEmpty()) return
+        val command = packages.joinToString("; ") { "am force-stop $it" } + "; true"
+        log("su -c $command")
+        log("rc=${runRoot(command)}")
+    }
+
     private fun runRoot(command: String): Int {
         return try {
             val process = ProcessBuilder("su", "-c", command)

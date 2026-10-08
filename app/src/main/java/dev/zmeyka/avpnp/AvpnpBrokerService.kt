@@ -40,6 +40,12 @@ class AvpnpBrokerService : Service() {
                     Log.i(TAG, "released local copy of ${config.tunName}")
                 }, RELEASE_DELAY_MS)
 
+                // The client's table now has a default route, so wire up routing immediately rather
+                // than making the operator press Apply.
+                Thread {
+                    runCatching { Routing.apply(this@AvpnpBrokerService) { Log.i(TAG, "routing: $it") } }
+                }.start()
+
                 pfd
             } catch (t: Throwable) {
                 Log.e(TAG, "acquireTun failed for $clientPackage", t)
