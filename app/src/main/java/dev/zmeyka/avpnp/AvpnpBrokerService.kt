@@ -10,12 +10,13 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 
 /**
- * The privileged surface avpnp exposes to hijacked clients: it hands out per-client TUN fds and
- * installs avpnp's routing state.
+ * The privileged surface avpnp exposes to hijacked clients.
  *
- * avpnp must be installed with `--force-queryable` for clients to be allowed to bind; callers are
- * additionally checked by uid against the configured client profiles, so a stray app cannot obtain
- * a TUN.
+ * It is deliberately registry-driven rather than hardcoded: a client asks for its own tunnel
+ * parameters, so clients can be added or removed at runtime. Callers are uid-checked against the
+ * package they claim to be.
+ *
+ * avpnp must be installed with the force-queryable override for clients to be allowed to bind.
  */
 class AvpnpBrokerService : Service() {
 
@@ -25,17 +26,18 @@ class AvpnpBrokerService : Service() {
 
         override fun acquireTun(clientPackage: String): ParcelFileDescriptor? {
             return try {
-                requireKnownCaller(clientPackage)
-                val profile = AvpnpConfig.profileFor(clientPackage) ?: return null
+                requireCaller(clientPackage)
+                val config = ClientRegistry.get(this@AvpnpBrokerService, clientPackage) ?: return null
                 Log.i(TAG, "acquireTun requested by $clientPackage")
-                val pfd = TunFactory.create(this@AvpnpBrokerService, profile)
+
+                val pfd = TunFactory.create(this@AvpnpBrokerService, config)
 
                 // Binder duplicates the fd into the reply. Once that has happened we must drop our
                 // own copy, otherwise the interface outlives the client (and a later connection
                 // fails with EBUSY on TUNSETIFF).
                 Handler(Looper.getMainLooper()).postDelayed({
                     runCatching { pfd.close() }
-                    Log.i(TAG, "released local copy of ${profile.tunName}")
+                    Log.i(TAG, "released local copy of ${config.tunName}")
                 }, RELEASE_DELAY_MS)
 
                 pfd
@@ -46,36 +48,37 @@ class AvpnpBrokerService : Service() {
         }
 
         override fun applyRouting() {
-            requireKnownCaller(null)
             Log.i(TAG, "applyRouting requested")
             Routing.apply(this@AvpnpBrokerService) { Log.i(TAG, "routing: $it") }
         }
 
         override fun isRoutingEnabled(clientPackage: String): Boolean {
             return try {
-                requireKnownCaller(clientPackage)
-                RoutingPrefs.isEnabled(this@AvpnpBrokerService, clientPackage)
+                RoutingPrefs.isMasterEnabled(this@AvpnpBrokerService) &&
+                    ClientRegistry.get(this@AvpnpBrokerService, clientPackage) != null
             } catch (t: Throwable) {
                 Log.e(TAG, "isRoutingEnabled failed for $clientPackage", t)
                 false
             }
         }
+
+        override fun clientConfig(clientPackage: String): String {
+            return try {
+                requireCaller(clientPackage)
+                ClientRegistry.get(this@AvpnpBrokerService, clientPackage)?.encode() ?: ""
+            } catch (t: Throwable) {
+                Log.e(TAG, "clientConfig failed for $clientPackage", t)
+                ""
+            }
+        }
     }
 
-    /**
-     * Ensures the binder caller's uid belongs to a configured client package. When [clientPackage]
-     * is non-null it must additionally match.
-     */
-    private fun requireKnownCaller(clientPackage: String?) {
-        val callingUid = Binder.getCallingUid()
-        val allowed = AvpnpConfig.profiles.any { profile ->
-            val uid = runCatching {
-                packageManager.getPackageUid(profile.packageName, 0)
-            }.getOrDefault(-1)
-            uid == callingUid && (clientPackage == null || clientPackage == profile.packageName)
-        }
-        if (!allowed) {
-            throw SecurityException("uid $callingUid is not a configured avpnp client")
+    /** The caller must actually be the package it names. */
+    private fun requireCaller(clientPackage: String) {
+        val caller = Binder.getCallingUid()
+        val owner = runCatching { packageManager.getPackageUid(clientPackage, 0) }.getOrDefault(-1)
+        if (owner != caller) {
+            throw SecurityException("uid $caller is not $clientPackage")
         }
     }
 

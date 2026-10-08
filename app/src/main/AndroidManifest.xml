@@ -7,6 +7,13 @@
     -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
+    <!--
+      avpnp's VPN is a full tunnel, so every app sits on avpnp's VPN network. That network must
+      advertise DNS servers or nothing resolves, and the only sensible ones are the underlying
+      network's, which we read from its LinkProperties.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

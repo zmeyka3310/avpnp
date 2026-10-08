@@ -5,50 +5,80 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import java.net.InetAddress
 
 /**
- * avpnp's own VpnService: it owns the single VPN slot for the profile so hijacked clients never
- * need to (and so Android cannot hand the slot to anyone else).
+ * avpnp's own VpnService.
  *
- * Step 1 is deliberately a no-op: it establishes, routes nothing, and is scoped with an allowed-app
- * list containing only avpnp itself, so no other app's traffic is captured. Its only jobs are to
- * hold the slot and to make Android treat avpnp as the active VPN.
+ * It owns the single VPN slot for the profile and now behaves as a real full-tunnel VPN: routes
+ * 0.0.0.0/0 and ::/0, no app allowlist. Everything netd steers into it that is not assigned to a
+ * client is sent back out by replacing avpnp's own table default with `throw` (see [Routing]), so
+ * unassigned traffic follows netd's normal rules to the physical uplink instead of being blackholed.
  */
 class AvpnpVpnService : VpnService() {
 
     private var tun: ParcelFileDescriptor? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Refuse to establish while any app is unassigned: "unassigned" must never silently mean
+        // "bypass". Only checks on first establish, so a running tunnel is never torn down by this.
+        if (tun == null) {
+            val unassigned = AppAssignments.unassigned(this)
+            if (unassigned.isNotEmpty()) {
+                Log.w(TAG, "refusing to start: ${unassigned.size} app(s) unassigned")
+                stopSelf()
+                return START_NOT_STICKY
+            }
+        }
+
         startForegroundNotification()
         if (tun == null) {
-            establishNoOpVpn()
+            establishVpn()
         }
         // Clients check this flag on their next prepare()/establish().
         Thread { runCatching { FlagPublisher.sync(this) { Log.i(TAG, "flag: $it") } } }.start()
         return START_STICKY
     }
 
-    private fun establishNoOpVpn() {
+    private fun establishVpn() {
         if (prepare(this) != null) {
             Log.w(TAG, "not prepared for VPN; cannot establish")
             return
         }
+
         tun = try {
-            Builder()
+            val builder = Builder()
                 .setSession("avpnp")
                 .addAddress(TUN_ADDRESS, 32)
-                // Keep it a per-app VPN that captures nothing that matters.
-                .addAllowedApplication(packageName)
-                .establish()
+                .addRoute("0.0.0.0", 0)
+                .addRoute("::", 0)
+
+            // A VPN network with no DNS servers resolves nothing, and every app is on this network.
+            // Adopt the underlying network's servers; their packets escape via `throw`.
+            underlyingDnsServers().forEach { address ->
+                runCatching { builder.addDnsServer(address) }
+                    .onFailure { Log.w(TAG, "cannot add DNS $address: $it") }
+            }
+
+            builder.establish()
         } catch (t: Throwable) {
             Log.e(TAG, "establish failed", t)
             null
         }
         Log.i(TAG, "avpnp VPN established: ${tun != null} (fd=${tun?.fd})")
+
+        if (tun != null) {
+            // Give netd a moment to create the VPN table, then compile the current intent.
+            Thread {
+                Thread.sleep(1000)
+                runCatching { Routing.apply(this) { Log.i(TAG, "routing: $it") } }
+            }.start()
+        }
     }
 
     override fun onRevoke() {
@@ -74,6 +104,13 @@ class AvpnpVpnService : VpnService() {
         Thread {
             runCatching { Routing.cleanup(this) { Log.i(TAG, "cleanup: $it") } }
         }.start()
+    }
+
+    /** DNS servers of the network this tunnel runs over. */
+    private fun underlyingDnsServers(): List<InetAddress> {
+        val manager = getSystemService(ConnectivityManager::class.java) ?: return emptyList()
+        val network = manager.activeNetwork ?: return emptyList()
+        return manager.getLinkProperties(network)?.dnsServers.orEmpty()
     }
 
     private fun startForegroundNotification() {

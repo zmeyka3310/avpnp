@@ -21,16 +21,14 @@ import java.util.concurrent.TimeUnit
 /**
  * Generic VPN-client hijack.
  *
- * Hooks the two Android framework methods every cooperative VpnService client shares:
- *   - `VpnService.prepare(Context)`  -> null, so the client believes it already has permission
- *   - `VpnService.Builder.establish()` -> an avpnp-owned TUN fd, so the client never binds to the
- *     framework and can run alongside other clients
+ * There is no compiled-in list of clients: the module is injected into whatever packages LSPosed
+ * scopes it to, and asks avpnp at runtime whether the package is a registered client and what TUN it
+ * should get. That is what makes the number of clients open-ended.
  *
- * Client selection, TUN parameters, and routing all come from avpnp ([AvpnpConfig]); the client's
- * own settings are ignored. Adding another client is a data change, not a code change.
- *
- * The fd is fetched from avpnp's broker over binder. avpnp is installed `--force-queryable` so the
- * client is allowed to bind to it.
+ * Two paths, chosen by a global flag avpnp publishes at [FlagPublisher.FLAG_PATH]:
+ *   - absent  -> the client runs its normal logic; nothing is substituted (fail-safe)
+ *   - present -> inject: VpnService.prepare() answers null and Builder.establish() returns an
+ *                avpnp-owned TUN fd
  */
 class AvpnpModule : IXposedHookLoadPackage {
 
@@ -38,24 +36,19 @@ class AvpnpModule : IXposedHookLoadPackage {
     private var brokerLatch: CountDownLatch? = null
     private var brokerConnection: ServiceConnection? = null
     private var vpnServiceContext: Context? = null
-    private var appContext: Context? = null
-    private var fakeTunPeer: ParcelFileDescriptor? = null
-    private var clientProfile: AvpnpConfig.ClientProfile? = null
-
-    @Volatile
-    private var routingEnabled = true
 
     @Volatile
     private var flagSeen = false
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
-        val profile = AvpnpConfig.profileFor(lpparam.packageName) ?: return
-        clientProfile = profile
-        log("hijack target: ${profile.label} (${profile.packageName}), routed=${profile.routedApps}")
+        val packageName = lpparam.packageName
+        if (packageName == "android" || packageName == "dev.zmeyka.avpnp") return
+
+        log("injected into $packageName")
         prebindAtProcessStart(lpparam)
         captureVpnServiceContext(lpparam)
-        hookPrepare(lpparam, profile)
-        hookEstablish(lpparam, profile)
+        hookPrepare(lpparam)
+        hookEstablish(lpparam)
     }
 
     /**
@@ -68,7 +61,6 @@ class AvpnpModule : IXposedHookLoadPackage {
             override fun afterHookedMethod(param: MethodHookParam) {
                 val context = param.thisObject as? Context ?: return
                 if (context !is android.app.Application) return
-                appContext = context
                 prebind(context)
             }
         })
@@ -86,53 +78,76 @@ class AvpnpModule : IXposedHookLoadPackage {
                 vpnServiceContext = context
                 log("captured VpnService instance as Context")
                 // During construction the Context is not attached yet, so bind on the main looper,
-                // after attachBaseContext() has run. This keeps establish() from blocking the
-                // client's service thread while it races its startForeground() deadline.
+                // after attachBaseContext() has run.
                 Handler(Looper.getMainLooper()).post { prebind(context) }
             }
         })
     }
 
-    private fun hookPrepare(lpparam: XC_LoadPackage.LoadPackageParam, profile: AvpnpConfig.ClientProfile) {
+    private fun hookPrepare(lpparam: XC_LoadPackage.LoadPackageParam) {
+        val packageName = lpparam.packageName
         val vpnServiceClass = XposedHelpers.findClass("android.net.VpnService", lpparam.classLoader)
         XposedBridge.hookAllMethods(vpnServiceClass, "prepare", object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
-                if (!hijackEnabled(profile)) {
-                    log("[${profile.label}] routing disabled; prepare() passes through")
+                if (clientConfig(packageName) == null) {
+                    log("[$packageName] not a registered client; prepare() passes through")
                     return
                 }
-                log("[${profile.label}] prepare() -> null (permission appears granted)")
+                log("[$packageName] prepare() -> null")
                 param.result = null
             }
         })
     }
 
-    private fun hookEstablish(lpparam: XC_LoadPackage.LoadPackageParam, profile: AvpnpConfig.ClientProfile) {
+    private fun hookEstablish(lpparam: XC_LoadPackage.LoadPackageParam) {
+        val packageName = lpparam.packageName
         val builderClass = XposedHelpers.findClass("android.net.VpnService\$Builder", lpparam.classLoader)
         XposedBridge.hookAllMethods(builderClass, "establish", object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
-                if (!hijackEnabled(profile)) {
-                    log("[${profile.label}] routing disabled; establish() passes through")
-                    return
-                }
                 try {
-                    val context = vpnServiceContext
-                    if (context == null) {
-                        log("[${profile.label}] no Context available yet")
+                    val config = clientConfig(packageName)
+                    if (config == null) {
+                        log("[$packageName] not a registered client; establish() passes through")
                         return
                     }
-                    val fd = if (AvpnpConfig.USE_FAKE_TUN) fakeTun(profile) else acquireTun(profile, context)
-                    if (fd == null) {
-                        log("[${profile.label}] no TUN available; letting the client fail normally")
+                    val context = vpnServiceContext ?: run {
+                        log("[$packageName] no Context yet; passing through")
                         return
                     }
-                    log("[${profile.label}] established with avpnp TUN fd=${fd.fd}")
+                    val fd = acquireTun(config, context) ?: run {
+                        log("[$packageName] no TUN available; passing through")
+                        return
+                    }
+                    log("[$packageName] established with avpnp TUN fd=${fd.fd}")
                     param.result = fd
                 } catch (t: Throwable) {
-                    log("[${profile.label}] establish hijack failed: $t")
+                    log("[$packageName] establish hijack failed: $t")
                 }
             }
         })
+    }
+
+    /** Asks avpnp whether this package is a registered client, and for its tunnel parameters. */
+    private fun clientConfig(packageName: String): ClientConfig? {
+        if (!globalFlagPresent()) return null
+        val service = broker ?: return null
+        return try {
+            val encoded = service.clientConfig(packageName)
+            if (encoded.isEmpty()) null else ClientConfig.decode(packageName, encoded)
+        } catch (t: Throwable) {
+            log("clientConfig($packageName) failed: $t")
+            null
+        }
+    }
+
+    private fun globalFlagPresent(): Boolean = runCatching {
+        val flag = File(FLAG_PATH)
+        flag.exists() && flag.readText().trim() == "1"
+    }.getOrDefault(false).also { present ->
+        if (present != flagSeen) {
+            flagSeen = present
+            log("routing flag present = $present")
+        }
     }
 
     /** Starts binding to avpnp's broker ahead of time, asynchronously. */
@@ -147,10 +162,6 @@ class AvpnpModule : IXposedHookLoadPackage {
                 broker = IAvpnpBroker.Stub.asInterface(service)
                 latch.countDown()
                 log("avpnp broker connected")
-                clientProfile?.let { profile ->
-                    runCatching { broker!!.isRoutingEnabled(profile.packageName) }
-                        .onSuccess { log("[${profile.label}] broker routing = $it") }
-                }
             }
 
             override fun onServiceDisconnected(name: ComponentName?) {
@@ -185,51 +196,8 @@ class AvpnpModule : IXposedHookLoadPackage {
      * Asks avpnp's broker for this client's TUN. By the time establish() runs the pre-bind has
      * normally completed, so this should not block meaningfully.
      */
-    /**
-     * Two paths, chosen by the presence of a global flag avpnp publishes at [FlagPublisher.FLAG_PATH]:
-     *
-     *  - flag absent  -> the client runs its normal logic; we never substitute anything
-     *  - flag present -> inject: hand the client an avpnp-owned TUN
-     *
-     * The absent case is a true fail-safe: an injected module with no published flag cannot break a
-     * client. Per-client granularity comes from the broker when it is reachable.
-     */
-    private fun hijackEnabled(profile: AvpnpConfig.ClientProfile): Boolean {
-        val flagged = globalFlagPresent()
-        if (!flagged) {
-            if (routingEnabled) log("[${profile.label}] no routing flag; falling back to normal logic")
-            routingEnabled = false
-            return false
-        }
-
-        val service = broker
-        val enabled = if (service == null) {
-            true
-        } else {
-            try {
-                service.isRoutingEnabled(profile.packageName)
-            } catch (t: Throwable) {
-                log("isRoutingEnabled failed: $t")
-                true
-            }
-        }
-        if (enabled != routingEnabled) log("[${profile.label}] routing enabled = $enabled")
-        routingEnabled = enabled
-        return enabled
-    }
-
-    private fun globalFlagPresent(): Boolean = runCatching {
-        val flag = File(FLAG_PATH)
-        flag.exists() && flag.readText().trim() == "1"
-    }.getOrDefault(false).also { present ->
-        if (present != flagSeen) {
-            flagSeen = present
-            log("routing flag present = $present")
-        }
-    }
-
-    private fun acquireTun(profile: AvpnpConfig.ClientProfile, context: Context): ParcelFileDescriptor? {
-        broker?.let { return it.acquireTun(profile.packageName) }
+    private fun acquireTun(config: ClientConfig, context: Context): ParcelFileDescriptor? {
+        broker?.let { return it.acquireTun(config.packageName) }
 
         prebind(context)
         // Keep well under the client's startForeground() deadline.
@@ -238,16 +206,7 @@ class AvpnpModule : IXposedHookLoadPackage {
             log("broker not ready within 3s")
             return null
         }
-        return broker?.acquireTun(profile.packageName)
-    }
-
-    /** Milestone fallback: a synthesized socketpair fd, no IPC. Only used if configured. */
-    private fun fakeTun(profile: AvpnpConfig.ClientProfile): ParcelFileDescriptor {
-        val pair = ParcelFileDescriptor.createReliableSocketPair()
-        fakeTunPeer?.let { runCatching { it.close() } }
-        fakeTunPeer = pair[1]
-        log("[${profile.label}] synthesized stand-in TUN (client=${pair[0].fd}, held=${pair[1].fd})")
-        return pair[0]
+        return broker?.acquireTun(config.packageName)
     }
 
     private fun log(message: String) {

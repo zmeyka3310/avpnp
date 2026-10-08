@@ -14,7 +14,7 @@ interface IAvpnpBroker {
     /** Create the client's TUN and return its fd, or null on failure. */
     ParcelFileDescriptor acquireTun(String clientPackage);
 
-    /** Install avpnp's routing state (ip rules) for the configured profiles. */
+    /** Install avpnp's routing state (ip rules) for the current assignments. */
     void applyRouting();
 
     /**
@@ -22,4 +22,10 @@ interface IAvpnpBroker {
      * The decision lives in avpnp so the injector stays policy-free.
      */
     boolean isRoutingEnabled(String clientPackage);
+
+    /**
+     * This client's tunnel parameters, encoded as `tunName|address|mtu|table`, or "" if the client
+     * is not registered. Lets clients be added without rebuilding the module.
+     */
+    String clientConfig(String clientPackage);
 }

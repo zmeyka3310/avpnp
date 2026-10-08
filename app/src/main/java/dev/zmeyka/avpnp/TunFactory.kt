@@ -14,16 +14,16 @@ import java.util.concurrent.TimeUnit
 /**
  * Creates a client's TUN by running avpnp's root helper and receiving the resulting fd.
  *
- * The helper runs as root (via `su`), opens /dev/net/tun, configures the interface, and sends the
- * fd back over an abstract Unix socket using SCM_RIGHTS. It makes no policy decisions: every
- * parameter comes from [AvpnpConfig].
+ * The helper runs as root (via `su`), opens /dev/net/tun, configures the interface, and sends the fd
+ * back over an abstract Unix socket using SCM_RIGHTS. It makes no policy decisions: every parameter
+ * comes from the client's [ClientConfig].
  */
 object TunFactory {
 
     private const val TAG = "avpnp"
     private const val ACCEPT_TIMEOUT_SECONDS = 20L
 
-    fun create(context: Context, profile: AvpnpConfig.ClientProfile): ParcelFileDescriptor {
+    fun create(context: Context, config: ClientConfig): ParcelFileDescriptor {
         val socketName = "avpnp_tun_${Process.myPid()}_${System.nanoTime()}"
         val server = LocalServerSocket(socketName)
 
@@ -34,10 +34,10 @@ object TunFactory {
             val command = listOf(
                 helper.absolutePath,
                 "--connect", socketName,
-                "--if", profile.tunName,
-                "--mtu", profile.tunMtu.toString(),
-                "--addr", profile.tunAddress,
-                "--table", profile.table.toString(),
+                "--if", config.tunName,
+                "--mtu", config.mtu.toString(),
+                "--addr", config.address,
+                "--table", config.table.toString(),
             ).joinToString(" ")
 
             Log.i(TAG, "starting helper: su -c $command")
@@ -70,7 +70,7 @@ object TunFactory {
 
             val pfd = ParcelFileDescriptor.dup(fds[0])
             client.close()
-            Log.i(TAG, "TUN ready for ${profile.label}: ${profile.tunName} fd=${pfd.fd}")
+            Log.i(TAG, "TUN ready for ${config.packageName}: ${config.tunName} fd=${pfd.fd}")
             return pfd
         } finally {
             runCatching { server.close() }

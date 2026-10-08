@@ -4,55 +4,75 @@ import android.content.Context
 import android.util.Log
 
 /**
- * Installs avpnp's kernel routing state.
+ * Installs avpnp's kernel routing state from the current intent: [AppAssignments] (which app goes
+ * where) compiled against [ClientRegistry] (which clients exist and their tables).
  *
- * Deliberately dumb: it turns [AvpnpConfig] into `ip rule` commands and runs them as root. No
- * validation beyond what the graph shows, no rollback, and no transactions — reapply is
- * delete-and-add.
+ * Deliberately dumb: no validation, no rollback, no transactions — reapply is flush-and-add.
  *
- * A link `X -> Y` compiles to `uidrange <uid_X> lookup <tbl_Y>`, installed for v4 and v6. The
- * table's `default dev <tun>` route is created by the TUN helper. Apps with no rule fall through to
- * netd's normal path, i.e. straight out.
+ * An assignment compiles to `uidrange <app uid> lookup <client table>`, installed for v4 and v6.
+ * The table's `default dev <tun>` route is created by the TUN helper.
+ *
+ * The three exits for now:
+ *   - bypass -> no rule at all; the app follows netd's normal path
+ *   - block  -> `ip rule ... blackhole`, an action, so it needs no table
+ *   - a client -> the client's table
+ *
+ * avpnp's own VPN table gets `throw default`, so traffic netd steers into avpnp's tunnel (but which
+ * is not assigned to a client) abandons that table and continues to netd's normal rules, i.e. out
+ * the physical uplink. That is what makes avpnp a real full-tunnel VPN without becoming a blackhole.
  */
 object Routing {
 
     private const val TAG = "avpnp"
 
     fun apply(context: Context, log: (String) -> Unit = {}) {
-        val command = buildCommand(context) ?: run {
-            log("nothing to apply")
-            return
-        }
-
+        val command = buildCommand(context)
         log("su -c $command")
-        val result = runRoot(command)
-        log("rc=$result")
+        log("rc=${runRoot(command)}")
     }
 
-    private fun buildCommand(context: Context): String? {
+    private fun buildCommand(context: Context): String {
         val commands = mutableListOf<String>()
 
-        // Flush the whole band first. Deleting only the priorities we are about to add would leave
-        // rules for links that have since been removed.
+        // Flush the whole band first, so rules for removed assignments cannot linger.
         commands += flushBand("-4")
         commands += flushBand("-6")
 
+        // Let unassigned traffic escape avpnp's own tunnel.
+        commands += ensureThrow("-4")
+        commands += ensureThrow("-6")
+
+        val clients = ClientRegistry.enabled(context).associateBy { it.packageName }
+        // A client app must never be routed into a client, or it would feed its own tunnel back
+        // into itself. avpnp itself is likewise always direct.
+        val excluded = clients.keys + context.packageName
         var priority = AvpnpConfig.RULE_PRIORITY_BASE
 
-        for (profile in AvpnpConfig.profiles) {
-            for (app in profile.routedApps) {
-                val uid = runCatching {
-                    context.packageManager.getPackageUid(app, 0)
-                }.getOrElse {
-                    Log.w(TAG, "cannot resolve $app: $it")
-                    -1
-                }
-                if (uid < 0) continue
+        for ((app, destination) in AppAssignments.all(context)) {
+            if (app in excluded) continue
+            // Bypass needs no rule: with no rule the app simply follows netd's normal path.
+            if (destination == AppAssignments.BYPASS) continue
 
-                val p = priority++
-                commands += "ip -4 rule add priority $p uidrange $uid-$uid lookup ${profile.table} 2>/dev/null"
-                commands += "ip -6 rule add priority $p uidrange $uid-$uid lookup ${profile.table} 2>/dev/null"
+            val uid = runCatching {
+                context.packageManager.getPackageUid(app, 0)
+            }.getOrElse {
+                Log.w(TAG, "cannot resolve $app: $it")
+                -1
             }
+            if (uid < 0) continue
+
+            if (destination == AppAssignments.BLOCK) {
+                // A rule action, so no table or interface is needed to drop the traffic.
+                val p = priority++
+                commands += "ip -4 rule add priority $p uidrange $uid-$uid blackhole 2>/dev/null"
+                commands += "ip -6 rule add priority $p uidrange $uid-$uid blackhole 2>/dev/null"
+                continue
+            }
+
+            val client = clients[destination] ?: continue
+            val p = priority++
+            commands += "ip -4 rule add priority $p uidrange $uid-$uid lookup ${client.table} 2>/dev/null"
+            commands += "ip -6 rule add priority $p uidrange $uid-$uid lookup ${client.table} 2>/dev/null"
         }
 
         return commands.joinToString("; ") + "; true"
@@ -63,6 +83,20 @@ object Routing {
         // The awk program is single-quoted for the shell, so $1 must reach awk literally.
         val awk = "awk -F: '\$1+0>=${AvpnpConfig.RULE_PRIORITY_BASE} && \$1+0<=${AvpnpConfig.RULE_PRIORITY_END} {print \$1+0}'"
         return "ip $family rule show | $awk | while read p; do ip $family rule del priority \$p 2>/dev/null; done"
+    }
+
+    /**
+     * Replaces the default route of avpnp's own VPN table with `throw`, so traffic netd steers into
+     * avpnp's tunnel — but which no assignment claims — abandons the table and continues to netd's
+     * normal rules, i.e. out the physical uplink.
+     *
+     * The table id cannot be guessed: it is neither the interface name nor derived from the ifindex.
+     * It is whatever netd's blanket VPN rule points at, so read it from that rule.
+     */
+    private fun ensureThrow(family: String): String {
+        val find =
+            "tbl=\$(ip $family rule show | awk '/^13000:/ {if (index(\$0,\"fwmark 0x0/0x20000\")>0 && index(\$0,\"uidrange 0-99999\")>0) {print \$NF; exit}}')"
+        return "$find; [ -n \"\$tbl\" ] && ip $family route replace throw default table \"\$tbl\" 2>/dev/null"
     }
 
     /**
