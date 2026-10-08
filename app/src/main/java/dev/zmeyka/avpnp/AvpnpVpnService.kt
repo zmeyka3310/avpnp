@@ -106,11 +106,25 @@ class AvpnpVpnService : VpnService() {
         }.start()
     }
 
-    /** DNS servers of the network this tunnel runs over. */
+    /**
+     * DNS servers to advertise on the VPN network.
+     *
+     * The underlying network's resolvers are often public ones that the network blocks on plain
+     * UDP:53 — the system resolver copes because it falls back to DoH, but an app doing its own DNS
+     * does not. A gateway almost always answers plain DNS and is on the LAN, so put it first.
+     */
     private fun underlyingDnsServers(): List<InetAddress> {
         val manager = getSystemService(ConnectivityManager::class.java) ?: return emptyList()
         val network = manager.activeNetwork ?: return emptyList()
-        return manager.getLinkProperties(network)?.dnsServers.orEmpty()
+        val linkProperties = manager.getLinkProperties(network) ?: return emptyList()
+
+        // Connected routes carry a wildcard "gateway" (0.0.0.0 / ::); those are not resolvers.
+        val gateways = linkProperties.routes
+            .mapNotNull { it.gateway }
+            .filterNot { it.isAnyLocalAddress }
+        val servers = (gateways + linkProperties.dnsServers).distinct()
+        Log.i(TAG, "advertising DNS: ${servers.joinToString()}")
+        return servers
     }
 
     private fun startForegroundNotification() {

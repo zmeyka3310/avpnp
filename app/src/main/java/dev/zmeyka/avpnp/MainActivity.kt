@@ -225,9 +225,9 @@ class MainActivity : Activity() {
         val options = exitOptions()
 
         Thread {
-            // Client apps are excluded: they route themselves, never through a tunnel.
-            val excluded = ClientRegistry.enabled(this).map { it.packageName }.toSet() + packageName
-            val entries = InstalledApps.entries(this).filter { it.packageName !in excluded }
+            // Only avpnp itself is exempt. Client apps are routable: a client can be chained into
+            // another client (tunnel in tunnel).
+            val entries = InstalledApps.entries(this).filter { it.packageName != packageName }
             appEntries = entries
             runOnUiThread {
                 appList.adapter = AppListAdapter(this, entries, options) { applyRouting() }

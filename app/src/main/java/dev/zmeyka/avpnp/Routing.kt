@@ -43,15 +43,19 @@ object Routing {
         commands += ensureThrow("-6")
 
         val clients = ClientRegistry.enabled(context).associateBy { it.packageName }
-        // A client app must never be routed into a client, or it would feed its own tunnel back
-        // into itself. avpnp itself is likewise always direct.
-        val excluded = clients.keys + context.packageName
         var priority = AvpnpConfig.RULE_PRIORITY_BASE
 
         for ((app, destination) in AppAssignments.all(context)) {
-            if (app in excluded) continue
+            // avpnp itself is never routed: it must keep a reliable path to its clients and to root.
+            if (app == context.packageName) continue
             // Bypass needs no rule: with no rule the app simply follows netd's normal path.
             if (destination == AppAssignments.BYPASS) continue
+            // A client may be routed into another client (tunnel in tunnel), but never into itself:
+            // its own server traffic would go straight back into the tunnel it feeds.
+            if (destination == app) {
+                Log.w(TAG, "ignoring self-assignment of $app")
+                continue
+            }
 
             val uid = runCatching {
                 context.packageManager.getPackageUid(app, 0)

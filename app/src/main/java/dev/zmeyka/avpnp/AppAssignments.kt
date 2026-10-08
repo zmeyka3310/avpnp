@@ -34,15 +34,13 @@ object AppAssignments {
     }
 
     /**
-     * Apps the operator has not yet assigned to any exit. VPN client apps and avpnp itself are
-     * excluded: they are never routed through a tunnel.
+     * Apps the operator has not yet assigned to any exit. Only avpnp itself is exempt — client apps
+     * still need an exit, because a client can legitimately be chained into another client.
      */
-    fun unassigned(context: Context): List<String> {
-        val excluded = ClientRegistry.enabled(context).map { it.packageName }.toSet() +
-            context.packageName
-        return InstalledApps.packages(context)
-            .filter { it !in excluded && destinationOf(context, it) == null }
-    }
+    fun unassigned(context: Context): List<String> =
+        InstalledApps.packages(context).filter {
+            it != context.packageName && destinationOf(context, it) == null
+        }
 
     private fun prefs(context: Context) =
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
