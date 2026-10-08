@@ -2,7 +2,7 @@ package dev.zmeyka.avpnp
 
 import android.content.Context
 import android.content.Intent
-import java.io.File
+import java.net.NetworkInterface
 
 /**
  * The set of VPN clients avpnp is willing to hijack, and their tunnel parameters.
@@ -60,9 +60,18 @@ object ClientRegistry {
     /** The part of a client's interface name before the kernel's instance number. */
     fun tunPrefix(config: ClientConfig): String = config.tunName.substringBefore("%d")
 
-    /** Whether this client currently has an interface, i.e. its tunnel is actually up. */
-    fun isTunUp(config: ClientConfig): Boolean =
-        File("/sys/class/net").list()?.any { it.startsWith(tunPrefix(config)) } == true
+    /**
+     * Whether this client currently has an interface, i.e. its tunnel is actually up.
+     *
+     * Must go through [NetworkInterface], not /sys/class/net: that directory is labelled sysfs_net
+     * and untrusted apps are denied reading it, so a File listing silently yields nothing.
+     */
+    fun isTunUp(config: ClientConfig): Boolean = runCatching {
+        val prefix = tunPrefix(config)
+        NetworkInterface.getNetworkInterfaces()
+            ?.toList()
+            ?.any { it.name.startsWith(prefix) } == true
+    }.getOrDefault(false)
 
     /** Apps that declare a VpnService: the candidates for hijacking. */
     fun candidates(context: Context): List<Pair<String, String>> =

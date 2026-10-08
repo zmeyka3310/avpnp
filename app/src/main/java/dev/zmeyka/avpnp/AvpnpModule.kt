@@ -14,7 +14,6 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
-import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -38,7 +37,7 @@ class AvpnpModule : IXposedHookLoadPackage {
     private var vpnServiceContext: Context? = null
 
     @Volatile
-    private var flagSeen = false
+    private var routingSeen = false
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
         val packageName = lpparam.packageName
@@ -127,27 +126,19 @@ class AvpnpModule : IXposedHookLoadPackage {
         })
     }
 
-    /** Asks avpnp whether this package is a registered client, and for its tunnel parameters. */
+    /**
+     * This package's client config, read straight from the world-readable file avpnp publishes.
+     *
+     * An absent file, routing disabled, or no `client|` entry for this package all mean the same
+     * thing: the client runs its normal logic and nothing is substituted. No policy crosses binder.
+     */
     private fun clientConfig(packageName: String): ClientConfig? {
-        if (!globalFlagPresent()) return null
-        val service = broker ?: return null
-        return try {
-            val encoded = service.clientConfig(packageName)
-            if (encoded.isEmpty()) null else ClientConfig.decode(packageName, encoded)
-        } catch (t: Throwable) {
-            log("clientConfig($packageName) failed: $t")
-            null
+        val snapshot = AvpnpTmpConfig.read()
+        if (snapshot.routingEnabled != routingSeen) {
+            routingSeen = snapshot.routingEnabled
+            log("routing enabled = ${snapshot.routingEnabled}")
         }
-    }
-
-    private fun globalFlagPresent(): Boolean = runCatching {
-        val flag = File(FLAG_PATH)
-        flag.exists() && flag.readText().trim() == "1"
-    }.getOrDefault(false).also { present ->
-        if (present != flagSeen) {
-            flagSeen = present
-            log("routing flag present = $present")
-        }
+        return snapshot.client(packageName)
     }
 
     /** Starts binding to avpnp's broker ahead of time, asynchronously. */
@@ -221,7 +212,5 @@ class AvpnpModule : IXposedHookLoadPackage {
 
     private companion object {
         const val TAG = "avpnp"
-        /** Must match [FlagPublisher.FLAG_PATH]. */
-        const val FLAG_PATH = "/data/local/tmp/avpnp.routing"
     }
 }

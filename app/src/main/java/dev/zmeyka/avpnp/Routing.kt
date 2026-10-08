@@ -104,6 +104,19 @@ object Routing {
     }
 
     /**
+     * Flushes avpnp's rule band without touching any interface.
+     *
+     * Used when avpnp's own VPN goes away. Client TUNs belong to the clients, so they must survive:
+     * deleting them here would kill every client's tunnel while the client kept running with a dead
+     * fd. The manual Cleanup button is the one that removes interfaces.
+     */
+    fun flushOnly(context: Context, log: (String) -> Unit = {}) {
+        val command = listOf(flushBand("-4"), flushBand("-6")).joinToString("; ") + "; true"
+        log("su -c $command")
+        log("rc=${runRoot(command)}")
+    }
+
+    /**
      * Removes everything avpnp installed: every rule in its band, and its TUN interfaces. Needed
      * because disabling the module does not remove kernel state, and a rule pointing at a deleted
      * TUN silently blackholes that app's traffic.

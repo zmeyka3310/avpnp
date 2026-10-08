@@ -57,26 +57,6 @@ class AvpnpBrokerService : Service() {
             Log.i(TAG, "applyRouting requested")
             Routing.apply(this@AvpnpBrokerService) { Log.i(TAG, "routing: $it") }
         }
-
-        override fun isRoutingEnabled(clientPackage: String): Boolean {
-            return try {
-                RoutingPrefs.isMasterEnabled(this@AvpnpBrokerService) &&
-                    ClientRegistry.get(this@AvpnpBrokerService, clientPackage) != null
-            } catch (t: Throwable) {
-                Log.e(TAG, "isRoutingEnabled failed for $clientPackage", t)
-                false
-            }
-        }
-
-        override fun clientConfig(clientPackage: String): String {
-            return try {
-                requireCaller(clientPackage)
-                ClientRegistry.get(this@AvpnpBrokerService, clientPackage)?.encode() ?: ""
-            } catch (t: Throwable) {
-                Log.e(TAG, "clientConfig failed for $clientPackage", t)
-                ""
-            }
-        }
     }
 
     /** The caller must actually be the package it names. */

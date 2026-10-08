@@ -133,7 +133,9 @@ class MainActivity : Activity() {
                 setOnCheckedChangeListener { _, checked ->
                     if (checked) ClientRegistry.enable(this@MainActivity, packageName)
                     else ClientRegistry.disable(this@MainActivity, packageName)
-                    // The exit list changed, so both sections need rebuilding.
+                    // The client set changed, so republish the config the injector reads, and
+                    // rebuild both sections since the exit list changed too.
+                    publishFlags()
                     buildClientList()
                     buildFolderList()
                     buildAppList()
@@ -341,10 +343,10 @@ class MainActivity : Activity() {
         Toast.makeText(this, "avpnp VPN starting", Toast.LENGTH_SHORT).show()
     }
 
-    /** Flag changes take effect the next time a client prepares/establishes. */
+    /** Config changes take effect the next time a client prepares/establishes. */
     private fun publishFlags() {
         Thread {
-            FlagPublisher.sync(this) { line -> android.util.Log.i("avpnp", line) }
+            ConfigPublisher.sync(this) { line -> android.util.Log.i("avpnp", line) }
         }.start()
     }
 }

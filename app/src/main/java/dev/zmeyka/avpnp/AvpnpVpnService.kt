@@ -79,8 +79,8 @@ class AvpnpVpnService : VpnService() {
         if (tun == null) {
             establishVpn()
         }
-        // Clients check this flag on their next prepare()/establish().
-        Thread { runCatching { FlagPublisher.sync(this) { Log.i(TAG, "flag: $it") } } }.start()
+        // Clients read this on their next prepare()/establish().
+        Thread { runCatching { ConfigPublisher.sync(this) { Log.i(TAG, "config: $it") } } }.start()
         return START_STICKY
     }
 
@@ -144,12 +144,12 @@ class AvpnpVpnService : VpnService() {
     }
 
     /**
-     * Drops avpnp's kernel routing state. Without this, stopping avpnp leaves rules pointing at
-     * TUNs that no longer exist, which silently blackholes the affected apps.
+     * Drops avpnp's rules when its own VPN goes away, but deliberately leaves client TUNs alone:
+     * those belong to the clients. The manual Cleanup button is what removes interfaces.
      */
     private fun cleanupRouting() {
         Thread {
-            runCatching { Routing.cleanup(this) { Log.i(TAG, "cleanup: $it") } }
+            runCatching { Routing.flushOnly(this) { Log.i(TAG, "cleanup: $it") } }
         }.start()
     }
 
